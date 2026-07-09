@@ -66,7 +66,6 @@ type Order struct {
 	OrderId           string     `gorm:"column:order_id;type:varchar(128);not null;index;comment:商户ID" json:"order_id"`
 	TradeId           string     `gorm:"column:trade_id;type:varchar(128);not null;uniqueIndex;comment:本地ID" json:"trade_id"`
 	TradeType         TradeType  `gorm:"column:trade_type;type:varchar(20);not null;index;comment:交易类型" json:"trade_type"`
-	TradeTypeReselect bool       `gorm:"column:trade_type_reselect;not null;default:0;comment:允许订单交易类型重选" json:"trade_type_reselect"`
 	Fiat              Fiat       `gorm:"column:fiat;type:varchar(16);not null;index;default:CNY;comment:法定货币" json:"fiat"`
 	Crypto            Crypto     `gorm:"column:crypto;type:varchar(16);not null;index;default:USDT;comment:加密货币" json:"crypto"`
 	CurrencyLimit     string     `gorm:"column:currency_limit;type:varchar(255);not null;default:'';comment:限定币种" json:"currency_limit"`
@@ -88,6 +87,7 @@ type Order struct {
 	RefBlockNum       int        `gorm:"column:ref_block_num;not null;default:0;comment:区块索引" json:"ref_block_num"`
 	ExpiredAt         time.Time  `gorm:"column:expired_at;not null;comment:失效时间" json:"expired_at"`
 	ConfirmedAt       *time.Time `gorm:"column:confirmed_at;not null;comment:交易确认时间" json:"confirmed_at"`
+	ClientFingerprint string     `gorm:"column:client_fingerprint;type:varchar(64);not null;default:'';comment:'客户端指纹'" json:"-"`
 	AutoTimeAt
 }
 
@@ -120,7 +120,15 @@ func (o *Order) CanReselectPayment() bool {
 		return false
 	}
 
-	return o.TradeTypeReselect
+	return true
+}
+
+func (o *Order) FingerprintBound() bool {
+	return o.ClientFingerprint != ""
+}
+
+func (o *Order) MatchFingerprint(fingerprint string) bool {
+	return !o.FingerprintBound() || o.ClientFingerprint == fingerprint
 }
 
 func (o *Order) SetExpired() {

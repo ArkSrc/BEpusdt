@@ -41,7 +41,6 @@ type createOrderReq struct {
 	Fiat        model.Fiat `json:"fiat"`
 	Currencies  string     `json:"currencies"`
 	Timeout     int64      `json:"timeout"`
-	Reselect    *bool      `json:"reselect"`
 }
 
 type updateOrderReq struct {
@@ -64,13 +63,19 @@ type methodsReq struct {
 	Currency string `json:"currency"`
 }
 
-// tradeTypeReselect 返回本次 create-order 是否允许确认交易类型后再次重选；未传 reselect 时使用后台全局配置。
-func (r createOrderReq) tradeTypeReselect() bool {
-	if r.Reselect == nil {
-		return model.OrderTradeTypeReselectEnabled()
+func loadPayOrder(ctx *gin.Context, tradeID string) (model.Order, bool) {
+	order, ok := model.GetTradeOrder(tradeID)
+	if !ok {
+		ctx.JSON(200, respFailJson("order not found"))
+		return model.Order{}, false
 	}
 
-	return *r.Reselect
+	if order.FingerprintBound() && !order.MatchFingerprint(utils.ClientFingerprint(ctx)) {
+		ctx.JSON(200, respFailJson("order not found"))
+		return model.Order{}, false
+	}
+
+	return order, true
 }
 
 func (Epusdt) Notify(ctx *gin.Context) {
@@ -131,16 +136,15 @@ func (Epusdt) CreateOrder(ctx *gin.Context) {
 
 	// 创建待付款订单
 	order, err := model.BuildPendingOrder(model.OrderParams{
-		Money:             decimal.NewFromFloat(req.Amount),
-		ApiType:           model.OrderApiTypeEpusdtOrder,
-		OrderId:           req.OrderID,
-		RedirectUrl:       req.RedirectURL,
-		NotifyUrl:         req.NotifyURL,
-		Name:              req.Name,
-		Timeout:           req.Timeout,
-		Fiat:              req.Fiat,
-		CurrencyLimit:     req.Currencies,
-		TradeTypeReselect: req.tradeTypeReselect(),
+		Money:         decimal.NewFromFloat(req.Amount),
+		ApiType:       model.OrderApiTypeEpusdtOrder,
+		OrderId:       req.OrderID,
+		RedirectUrl:   req.RedirectURL,
+		NotifyUrl:     req.NotifyURL,
+		Name:          req.Name,
+		Timeout:       req.Timeout,
+		Fiat:          req.Fiat,
+		CurrencyLimit: req.Currencies,
 	})
 	if err != nil {
 		ctx.JSON(200, respFailJson(fmt.Sprintf("CreateOrder: order create failed: %s", err.Error())))
@@ -178,10 +182,8 @@ func (Epusdt) UpdateOrder(ctx *gin.Context) {
 		host = "https://" + ctx.Request.Host
 	}
 
-	// 获取订单
-	order, ok := model.GetTradeOrder(req.TradeID)
+	order, ok := loadPayOrder(ctx, req.TradeID)
 	if !ok {
-		ctx.JSON(200, respFailJson("order not found"))
 		return
 	}
 
@@ -196,7 +198,9 @@ func (Epusdt) UpdateOrder(ctx *gin.Context) {
 		return
 	}
 
-	// 拒绝任务未及时改成 expired，实际订单已过期时更新订单
+	fp := utils.ClientFingerprint(ctx)
+
+	// 拒绝过期订单
 	remaining := time.Until(order.ExpiredAt)
 	if remaining <= 0 {
 		ctx.JSON(200, respFailJson("update order failed: order expired"))
@@ -222,7 +226,7 @@ func (Epusdt) UpdateOrder(ctx *gin.Context) {
 		Name:              order.Name,
 		Timeout:           int64(math.Ceil(remaining.Seconds())),
 		Fiat:              order.Fiat,
-		TradeTypeReselect: order.TradeTypeReselect,
+		ClientFingerprint: fp,
 	}
 
 	newOrder, err := model.RebuildOrder(order, params)
@@ -360,9 +364,8 @@ func (Epusdt) GetMethods(ctx *gin.Context) {
 		return
 	}
 
-	order, ok := model.GetTradeOrder(req.TradeID)
+	order, ok := loadPayOrder(ctx, req.TradeID)
 	if !ok {
-		ctx.JSON(200, respFailJson("order not found"))
 		return
 	}
 
@@ -388,9 +391,8 @@ func (Epusdt) Info(ctx *gin.Context) {
 		return
 	}
 
-	order, ok := model.GetTradeOrder(req.TradeID)
+	order, ok := loadPayOrder(ctx, req.TradeID)
 	if !ok {
-		ctx.JSON(200, respFailJson("订单不存在"))
 		return
 	}
 
